@@ -1,0 +1,92 @@
+"""API de tarefas com MySQL (FastAPI + PyMySQL).
+
+Endpoints: GET /saude, GET /tarefas e POST /tarefas.
+Todas as credenciais vêm de variáveis de ambiente (12-Factor App, fator III).
+"""
+import os
+import time
+from contextlib import asynccontextmanager, contextmanager
+
+import pymysql
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel, Field
+from pymysql.cursors import DictCursor
+
+
+def _config() -> dict:
+    # Todas as credenciais vêm de variáveis de ambiente (12-Factor App, fator III).
+    return {
+        "host": os.environ.get("DB_HOST", "localhost"),
+        "port": int(os.environ.get("DB_PORT", "3306")),
+        "user": os.environ["DB_USER"],
+        "password": os.environ["DB_PASSWORD"],
+        "database": os.environ["DB_NAME"],
+        "cursorclass": DictCursor,
+        "autocommit": True,
+        "connect_timeout": 5,
+    }
+
+
+@contextmanager
+def conexao():
+    con = pymysql.connect(**_config())
+    try:
+        yield con
+    finally:
+        con.close()
+
+
+def aguardar_banco(tentativas: int = 30, intervalo: float = 2.0) -> None:
+    """Tenta conectar até o MySQL aceitar conexões (a porta abre antes do servidor estar pronto)."""
+    for n in range(1, tentativas + 1):
+        try:
+            with conexao():
+                return
+        except pymysql.err.OperationalError:
+            print(f"[api] MySQL indisponível (tentativa {n}/{tentativas})", flush=True)
+            time.sleep(intervalo)
+    raise RuntimeError("MySQL não respondeu a tempo")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    aguardar_banco()
+    yield
+
+
+app = FastAPI(title="API de Tarefas + MySQL", version="1.0.0", lifespan=lifespan)
+
+
+class TarefaEntrada(BaseModel):
+    titulo: str = Field(min_length=1, max_length=120)
+
+
+class Tarefa(BaseModel):
+    id: int
+    titulo: str
+
+
+@app.get("/saude")
+def saude():
+    """Health check: confirma que a API alcança o banco."""
+    try:
+        with conexao() as con, con.cursor() as cur:
+            cur.execute("SELECT 1 AS ok")
+            return {"api": "ok", "banco": "ok" if cur.fetchone()["ok"] == 1 else "falha"}
+    except pymysql.err.MySQLError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"banco indisponível: {exc}")
+
+
+@app.get("/tarefas", response_model=list[Tarefa])
+def listar_tarefas():
+    with conexao() as con, con.cursor() as cur:
+        cur.execute("SELECT id, titulo FROM tarefas ORDER BY id")
+        return cur.fetchall()
+
+
+@app.post("/tarefas", response_model=Tarefa, status_code=status.HTTP_201_CREATED)
+def criar_tarefa(entrada: TarefaEntrada):
+    with conexao() as con, con.cursor() as cur:
+        # Consulta parametrizada: o driver escapa o valor (previne SQL Injection).
+        cur.execute("INSERT INTO tarefas (titulo) VALUES (%s)", (entrada.titulo,))
+        return {"id": cur.lastrowid, "titulo": entrada.titulo}

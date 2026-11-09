@@ -1,0 +1,8 @@
+-- Executado uma única vez, na primeira criação do volume de dados do MySQL.
+CREATE TABLE IF NOT EXISTS tarefas (
+    id     INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    titulo VARCHAR(120) NOT NULL,
+    criada_em TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO tarefas (titulo) VALUES ('Tarefa inicial criada pelo init.sql');
